@@ -2,11 +2,9 @@
 """Advanced STM32G030F6P6 bootloader/application HEX merger (stdlib only)."""
 from __future__ import annotations
 import struct
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
-APP_NAME = "STM32G030 Firmware Package Tool"
+APP_NAME = "STM32 HEX Merger — FlashForge"
 FLASH_START = 0x08000000
 FLASH_SIZE = 32 * 1024
 FLASH_END = FLASH_START + FLASH_SIZE
@@ -180,127 +178,185 @@ def build_package(boot_path: str, app_path: str, hex_path: str, bin_path: str | 
             "app_start": app_start, "app_end": app_end,
             "metadata_start": metadata_start, "metadata_end": metadata_end}
 
-class App(tk.Tk):
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
+    QFileDialog, QMessageBox, QCheckBox, QGridLayout, QVBoxLayout,
+    QHBoxLayout, QGroupBox, QTextEdit, QSpinBox, QFormLayout
+)
+import sys
+
+class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME); self.geometry("880x650"); self.minsize(790, 590)
-        self.boot_var, self.app_var = tk.StringVar(), tk.StringVar()
-        self.hex_var = tk.StringVar()
-        self.bin_var = tk.StringVar()
-        self.version_var = tk.StringVar(value="1")
-        self.flash_start_var = tk.StringVar(value="0x08000000")
-        self.flash_size_var = tk.StringVar(value="32")
-        self.boot_start_var = tk.StringVar(value="0x08000000")
-        self.app_start_var = tk.StringVar(value="0x08001800")
-        self.metadata_start_var = tk.StringVar(value="0x08007800")
-        self.metadata_size_var = tk.StringVar(value="2")
-        self.make_bin_var = tk.BooleanVar(value=True)
-        self._ui()
+        self.setWindowTitle(APP_NAME)
+        self.resize(940, 760)
+        self.setMinimumSize(820, 680)
+        self.fields = {}
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        title = QLabel("STM32 HEX Merger")
+        title.setObjectName("title")
+        subtitle = QLabel("Merge Bootloader + Application, generate CRC metadata, and export HEX/BIN.")
+        subtitle.setWordWrap(True)
+        root.addWidget(title)
+        root.addWidget(subtitle)
 
-    def _ui(self):
-        root = ttk.Frame(self, padding=18); root.pack(fill="both", expand=True)
-        root.columnconfigure(1, weight=1); root.rowconfigure(15, weight=1)
-        ttk.Label(root, text="STM32G030 Firmware Package Tool", font=("Segoe UI", 17, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(root, text="Validate and merge Bootloader + Application + CRC metadata; optionally export a full 32 KiB BIN.", wraplength=800).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
-        self.file_row(root, 2, "Bootloader HEX", self.boot_var, self.pick_boot)
-        self.file_row(root, 3, "Application HEX", self.app_var, self.pick_app)
-        self.file_row(root, 4, "Output combined HEX", self.hex_var, self.pick_hex)
-        ttk.Checkbutton(root, text="Also generate full-flash BIN (32 KiB, base address 0x08000000)", variable=self.make_bin_var, command=self.toggle_bin).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self.bin_entry_row = ttk.Frame(root); self.bin_entry_row.grid(row=6, column=0, columnspan=3, sticky="ew")
-        self.bin_entry_row.columnconfigure(1, weight=1)
-        ttk.Label(self.bin_entry_row, text="Output BIN").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(self.bin_entry_row, textvariable=self.bin_var).grid(row=0, column=1, sticky="ew", padx=(10, 8), pady=5)
-        ttk.Button(self.bin_entry_row, text="Browse…", command=self.pick_bin).grid(row=0, column=2, pady=5)
-        ttk.Label(root, text="Firmware version (uint16; decimal or 0xHEX)").grid(row=7, column=0, sticky="w", pady=(7, 4))
-        ttk.Entry(root, textvariable=self.version_var, width=18).grid(row=7, column=1, sticky="w", pady=(7, 4))
-        mem = ttk.LabelFrame(root, text="Memory layout — editable (addresses accept 0xHEX)", padding=10)
-        mem.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(10, 6))
-        for col in (1, 3): mem.columnconfigure(col, weight=1)
-        fields = [
-            ("Flash base", self.flash_start_var, 0, 0), ("Flash size (KiB)", self.flash_size_var, 0, 2),
-            ("Bootloader start", self.boot_start_var, 1, 0), ("Application start", self.app_start_var, 1, 2),
-            ("Metadata start", self.metadata_start_var, 2, 0), ("Metadata page (KiB)", self.metadata_size_var, 2, 2),
+        files_box = QGroupBox("Firmware files")
+        files = QGridLayout(files_box)
+        self.boot = self.add_file_row(files, 0, "Bootloader HEX", "Select bootloader HEX", False)
+        self.apphex = self.add_file_row(files, 1, "Application HEX", "Select application HEX", False)
+        self.outhex = self.add_file_row(files, 2, "Output combined HEX", "Save combined HEX", True, "stm32_combined.hex")
+        root.addWidget(files_box)
+
+        self.bin_check = QCheckBox("Also generate full-Flash BIN image")
+        self.bin_check.setChecked(True)
+        self.bin_check.toggled.connect(self.toggle_bin)
+        root.addWidget(self.bin_check)
+        bin_row = QHBoxLayout()
+        bin_row.addWidget(QLabel("Output BIN"))
+        self.bin_edit = QLineEdit()
+        bin_row.addWidget(self.bin_edit, 1)
+        bin_btn = QPushButton("Browse…")
+        bin_btn.clicked.connect(self.pick_bin)
+        bin_row.addWidget(bin_btn)
+        root.addLayout(bin_row)
+        self.bin_row_widgets = [self.bin_edit, bin_btn]
+
+        settings = QGroupBox("Firmware / memory layout (addresses accept 0x-prefixed HEX)")
+        grid = QGridLayout(settings)
+        defaults = [
+            ("Firmware version (uint16)", "version", "1", 0, 0),
+            ("Flash base", "flash_start", "0x08000000", 0, 2),
+            ("Flash size (KiB)", "flash_size", "32", 1, 0),
+            ("Bootloader start", "boot_start", "0x08000000", 1, 2),
+            ("Application start", "app_start", "0x08001800", 2, 0),
+            ("Metadata start", "metadata_start", "0x08007800", 2, 2),
+            ("Metadata page (KiB)", "metadata_size", "2", 3, 0),
         ]
-        for label, var, row, col in fields:
-            ttk.Label(mem, text=label).grid(row=row, column=col, sticky="w", padx=(0, 6), pady=4)
-            ttk.Entry(mem, textvariable=var, width=18).grid(row=row, column=col+1, sticky="ew", padx=(0, 12), pady=4)
-        ttk.Label(mem, text="Bootloader end = Application start − 1 | Application end = Metadata start − 1 | BIN base = Flash base", wraplength=800).grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        buttons = ttk.Frame(root); buttons.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(4, 10))
-        ttk.Button(buttons, text="Generate & Verify Package", command=self.generate).pack(side="left", fill="x", expand=True, ipady=6)
-        ttk.Button(buttons, text="Clear Log", command=self.clear_log).pack(side="left", padx=(8, 0), ipady=6)
-        self.log = tk.Text(root, height=9, wrap="word", state="disabled", font=("Consolas", 9))
-        self.log.grid(row=10, column=0, columnspan=3, sticky="nsew")
-        ttk.Label(root, text="Safety: erase target Flash before programming. HEX/BIN files do not erase old Flash by themselves.", foreground="#9A3412", wraplength=820).grid(row=11, column=0, columnspan=3, sticky="w", pady=(9, 0))
+        for label, key, value, row, col in defaults:
+            grid.addWidget(QLabel(label), row, col)
+            edit = QLineEdit(value)
+            edit.setMinimumWidth(180)
+            grid.addWidget(edit, row, col + 1)
+            self.fields[key] = edit
+        root.addWidget(settings)
 
-    def file_row(self, parent, row, label, var, callback):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=5)
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=(10, 8), pady=5)
-        ttk.Button(parent, text="Browse…", command=callback).grid(row=row, column=2, pady=5)
-    def pick(self, title, save=False, initial=""):
+        buttons = QHBoxLayout()
+        self.generate_btn = QPushButton("Generate & Verify Package")
+        self.generate_btn.setObjectName("primary")
+        self.generate_btn.clicked.connect(self.generate)
+        buttons.addWidget(self.generate_btn, 1)
+        clear_btn = QPushButton("Clear Log")
+        clear_btn.clicked.connect(lambda: self.log.clear())
+        buttons.addWidget(clear_btn)
+        root.addLayout(buttons)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("Validation results and output details will appear here…")
+        root.addWidget(self.log, 1)
+        warning = QLabel("Safety: HEX/BIN files do not erase old target Flash. Erase the required Flash region before programming.")
+        warning.setWordWrap(True)
+        warning.setObjectName("warning")
+        root.addWidget(warning)
+        self.setStyleSheet("""
+            QMainWindow { background: #f4f6f8; }
+            QWidget { font-family: 'Segoe UI'; font-size: 10pt; color: #17212b; }
+            QLabel#title { font-size: 21pt; font-weight: 700; color: #12324a; padding-top: 4px; }
+            QGroupBox { font-weight: 600; border: 1px solid #cbd5df; border-radius: 8px; margin-top: 10px; padding: 12px; background: white; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
+            QLineEdit { background: white; border: 1px solid #bac6d1; border-radius: 5px; padding: 7px; }
+            QPushButton { padding: 8px 13px; border: 1px solid #bac6d1; border-radius: 5px; background: white; }
+            QPushButton:hover { background: #eaf1f7; }
+            QPushButton#primary { background: #1769aa; color: white; font-weight: 600; border: none; padding: 11px; }
+            QPushButton#primary:hover { background: #12568d; }
+            QTextEdit { background: #101923; color: #d7e5ef; border-radius: 6px; padding: 8px; font-family: Consolas; }
+            QLabel#warning { color: #8a3c12; padding: 5px 0; }
+        """)
+        self.toggle_bin(self.bin_check.isChecked())
+
+    def add_file_row(self, layout, row, label, title, save=False, initial=""):
+        layout.addWidget(QLabel(label), row, 0)
+        edit = QLineEdit()
+        layout.addWidget(edit, row, 1)
+        btn = QPushButton("Browse…")
+        btn.clicked.connect(lambda: self.choose_file(edit, title, save, initial))
+        layout.addWidget(btn, row, 2)
+        return edit
+
+    def choose_file(self, edit, title, save=False, initial=""):
         if save:
-            return filedialog.asksaveasfilename(title=title, defaultextension=Path(initial).suffix or ".hex", initialfile=initial, filetypes=[("Firmware file", "*.hex *.bin"), ("All files", "*.*")])
-        return filedialog.askopenfilename(title=title, filetypes=[("Intel HEX", "*.hex *.ihx"), ("All files", "*.*")])
-    def pick_boot(self):
-        p=self.pick("Select bootloader HEX")
-        if p: self.boot_var.set(p); self.suggest_outputs()
-    def pick_app(self):
-        p=self.pick("Select application HEX")
-        if p: self.app_var.set(p); self.suggest_outputs()
+            path, _ = QFileDialog.getSaveFileName(self, title, initial, "Intel HEX (*.hex);;All files (*)")
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, title, "", "Intel HEX (*.hex *.ihx);;All files (*)")
+        if path:
+            edit.setText(path)
+            self.suggest_outputs()
+
     def suggest_outputs(self):
-        base = Path(self.app_var.get() or self.boot_var.get())
-        if base.suffix: base = base.with_suffix("")
-        if not self.hex_var.get(): self.hex_var.set(str(base.parent / (base.name + "_combined.hex")))
-        if not self.bin_var.get(): self.bin_var.set(str(base.parent / (base.name + "_combined.bin")))
-    def pick_hex(self):
-        p=self.pick("Save combined Intel HEX", True, "stm32g030_combined.hex")
-        if p: self.hex_var.set(p)
+        source = self.apphex.text().strip() or self.boot.text().strip()
+        if not source: return
+        base = Path(source)
+        stem = base.with_suffix("")
+        if not self.outhex.text().strip(): self.outhex.setText(str(stem.parent / (stem.name + "_combined.hex")))
+        if not self.bin_edit.text().strip(): self.bin_edit.setText(str(stem.parent / (stem.name + "_combined.bin")))
+
     def pick_bin(self):
-        p=self.pick("Save full-flash BIN", True, "stm32g030_combined.bin")
-        if p: self.bin_var.set(p)
-    def toggle_bin(self):
-        if self.make_bin_var.get(): self.bin_entry_row.grid()
-        else: self.bin_entry_row.grid_remove()
-    def write_log(self, msg):
-        self.log.configure(state="normal"); self.log.insert("end", msg + "\n"); self.log.see("end"); self.log.configure(state="disabled")
-    def clear_log(self):
-        self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
+        path, _ = QFileDialog.getSaveFileName(self, "Save full-Flash BIN", "stm32_combined.bin", "Binary image (*.bin);;All files (*)")
+        if path: self.bin_edit.setText(path)
+
+    def toggle_bin(self, enabled):
+        for widget in getattr(self, "bin_row_widgets", []): widget.setVisible(enabled)
+
+    def log_line(self, text): self.log.append(text)
+
     def generate(self):
-        boot, app, out_hex = self.boot_var.get().strip(), self.app_var.get().strip(), self.hex_var.get().strip()
-        out_bin = self.bin_var.get().strip() if self.make_bin_var.get() else None
-        if not boot or not app or not out_hex or (self.make_bin_var.get() and not out_bin):
-            messagebox.showerror("Missing input", "Select both input HEX files and all enabled output paths."); return
+        boot, app, out_hex = self.boot.text().strip(), self.apphex.text().strip(), self.outhex.text().strip()
+        out_bin = self.bin_edit.text().strip() if self.bin_check.isChecked() else None
+        if not boot or not app or not out_hex or (self.bin_check.isChecked() and not out_bin):
+            QMessageBox.warning(self, "Missing input", "Select both input HEX files and all enabled output paths.")
+            return
         if not Path(boot).is_file() or not Path(app).is_file():
-            messagebox.showerror("File not found", "Bootloader or application HEX file does not exist."); return
+            QMessageBox.critical(self, "File not found", "Bootloader or application HEX file does not exist.")
+            return
         try:
-            version = int(self.version_var.get().strip(), 0)
-            flash_start = parse_address(self.flash_start_var.get(), "Flash base")
-            flash_size = int(self.flash_size_var.get().strip(), 0)
-            boot_start = parse_address(self.boot_start_var.get(), "Bootloader start")
-            app_start = parse_address(self.app_start_var.get(), "Application start")
-            metadata_start = parse_address(self.metadata_start_var.get(), "Metadata start")
-            metadata_size = int(self.metadata_size_var.get().strip(), 0)
-            r = build_package(boot, app, out_hex, out_bin, version, flash_start, flash_size,
-                              boot_start, app_start, metadata_start, metadata_size)
+            version = int(self.fields["version"].text().strip(), 0)
+            flash_start = parse_address(self.fields["flash_start"].text(), "Flash base")
+            flash_size = int(self.fields["flash_size"].text().strip(), 0)
+            boot_start = parse_address(self.fields["boot_start"].text(), "Bootloader start")
+            app_start = parse_address(self.fields["app_start"].text(), "Application start")
+            metadata_start = parse_address(self.fields["metadata_start"].text(), "Metadata start")
+            metadata_size = int(self.fields["metadata_size"].text().strip(), 0)
+            result = build_package(boot, app, out_hex, out_bin, version, flash_start, flash_size,
+                                   boot_start, app_start, metadata_start, metadata_size)
         except Exception as exc:
-            self.write_log("ERROR: " + str(exc)); messagebox.showerror("Package generation failed", str(exc)); return
-        self.write_log("=" * 64)
-        self.write_log("PACKAGE GENERATED AND VERIFIED")
-        self.write_log(f"Bootloader data:        {r['boot_bytes']:,} bytes")
-        self.write_log(f"Application HEX data:   {r['app_bytes']:,} bytes")
-        self.write_log(f"Application CRC span:   {r['app_span']:,} bytes")
-        self.write_log(f"CRC-16/CCITT-FALSE:     0x{r['crc']:04X}")
-        self.write_log(f"Firmware version:       {r['version']} (0x{r['version']:04X})")
-        self.write_log(f"Flash range:             0x{r['flash_start']:08X}–0x{r['flash_end']-1:08X}")
-        self.write_log(f"Bootloader range:        0x{r['boot_start']:08X}–0x{r['boot_end']-1:08X}")
-        self.write_log(f"Application range:       0x{r['app_start']:08X}–0x{r['app_end']-1:08X}")
-        self.write_log(f"Metadata:               {r['metadata_bytes']} bytes @ 0x{r['metadata_start']:08X}")
-        self.write_log(f"Combined HEX data:      {r['combined_bytes']:,} bytes / {r['hex_records']} records")
-        self.write_log(f"HEX output: {r['hex']}")
-        if r['bin']:
-            self.write_log(f"BIN output: {r['bin']} ({r['bin_size']:,} bytes; base 0x{r['flash_start']:08X})")
-        self.write_log("Verified by re-reading generated output file(s).")
-        self.write_log("IMPORTANT: erase target Flash before programming.")
-        messagebox.showinfo("Package ready", f"Package generated and verified.\n\nApp span: {r['app_span']:,} bytes\nCRC: 0x{r['crc']:04X}\nVersion: {r['version']}\n" + (f"BIN: {r['bin_size']:,} bytes\nBase: 0x{r['flash_start']:08X}\n\n" if r['bin'] else "\n") + "Erase target Flash before programming.")
+            self.log_line("ERROR: " + str(exc))
+            QMessageBox.critical(self, "Package generation failed", str(exc))
+            return
+        self.log_line("=" * 62)
+        self.log_line("PACKAGE GENERATED AND VERIFIED")
+        self.log_line(f"Bootloader data:       {result['boot_bytes']:,} bytes")
+        self.log_line(f"Application HEX data:  {result['app_bytes']:,} bytes")
+        self.log_line(f"Application CRC span:  {result['app_span']:,} bytes")
+        self.log_line(f"CRC-16/CCITT-FALSE:    0x{result['crc']:04X}")
+        self.log_line(f"Firmware version:      {result['version']} (0x{result['version']:04X})")
+        self.log_line(f"Flash range:           0x{result['flash_start']:08X}–0x{result['flash_end']-1:08X}")
+        self.log_line(f"Bootloader range:      0x{result['boot_start']:08X}–0x{result['boot_end']-1:08X}")
+        self.log_line(f"Application range:     0x{result['app_start']:08X}–0x{result['app_end']-1:08X}")
+        self.log_line(f"Metadata:              {result['metadata_bytes']} bytes @ 0x{result['metadata_start']:08X}")
+        self.log_line(f"Combined HEX data:     {result['combined_bytes']:,} bytes / {result['hex_records']} records")
+        self.log_line(f"HEX output: {result['hex']}")
+        if result['bin']:
+            self.log_line(f"BIN output: {result['bin']} ({result['bin_size']:,} bytes; base 0x{result['flash_start']:08X})")
+        self.log_line("Verified by re-reading generated output file(s).")
+        self.log_line("IMPORTANT: erase target Flash before programming.")
+        QMessageBox.information(self, "Package ready", f"Package generated and verified.\n\nApp span: {result['app_span']:,} bytes\nCRC: 0x{result['crc']:04X}\nVersion: {result['version']}\n" + (f"BIN: {result['bin_size']:,} bytes\nBase: 0x{result['flash_start']:08X}\n\n" if result['bin'] else "\n") + "Erase target Flash before programming.")
 
 if __name__ == "__main__":
-    App().mainloop()
+    app = QApplication(sys.argv)
+    window = App()
+    window.show()
+    sys.exit(app.exec())
