@@ -208,7 +208,8 @@ class App(QMainWindow):
         files = QGridLayout(files_box)
         self.boot = self.add_file_row(files, 0, "Bootloader HEX", "Select bootloader HEX", False)
         self.apphex = self.add_file_row(files, 1, "Application HEX", "Select application HEX", False)
-        self.outhex = self.add_file_row(files, 2, "Output combined HEX", "Save combined HEX", True, "stm32_combined.hex")
+        self.outhex = self.add_file_row(files, 2, "Output HEX (auto-save path)", "Choose output HEX location (optional)", True, "stm32_combined.hex")
+        self.outhex.setReadOnly(True)
         root.addWidget(files_box)
 
         self.bin_check = QCheckBox("Also generate full-Flash BIN image")
@@ -216,8 +217,9 @@ class App(QMainWindow):
         self.bin_check.toggled.connect(self.toggle_bin)
         root.addWidget(self.bin_check)
         bin_row = QHBoxLayout()
-        bin_row.addWidget(QLabel("Output BIN"))
+        bin_row.addWidget(QLabel("Output BIN (auto-save path)"))
         self.bin_edit = QLineEdit()
+        self.bin_edit.setReadOnly(True)
         bin_row.addWidget(self.bin_edit, 1)
         bin_btn = QPushButton("Browse…")
         bin_btn.clicked.connect(self.pick_bin)
@@ -301,8 +303,9 @@ class App(QMainWindow):
         if not source: return
         base = Path(source)
         stem = base.with_suffix("")
-        if not self.outhex.text().strip(): self.outhex.setText(str(stem.parent / (stem.name + "_combined.hex")))
-        if not self.bin_edit.text().strip(): self.bin_edit.setText(str(stem.parent / (stem.name + "_combined.bin")))
+        # Outputs are generated automatically beside the application HEX.
+        self.outhex.setText(str(stem.parent / (stem.name + "_combined.hex")))
+        self.bin_edit.setText(str(stem.parent / (stem.name + "_combined.bin")))
 
     def pick_bin(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save full-Flash BIN", "stm32_combined.bin", "Binary image (*.bin);;All files (*)")
@@ -313,14 +316,29 @@ class App(QMainWindow):
 
     def log_line(self, text): self.log.append(text)
 
+    def show_message(self, icon, title, text):
+        # Explicit dialog colors prevent unreadable text under Windows dark mode
+        # or an inherited system palette.
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setStyleSheet("""
+            QMessageBox { background-color: #ffffff; }
+            QMessageBox QLabel { color: #17212b; background-color: transparent; font-size: 10pt; }
+            QMessageBox QPushButton { color: #17212b; background-color: #f4f6f8; border: 1px solid #bac6d1; border-radius: 5px; padding: 7px 18px; min-width: 55px; }
+            QMessageBox QPushButton:hover { background-color: #e5edf5; }
+        """)
+        box.exec()
+
     def generate(self):
         boot, app, out_hex = self.boot.text().strip(), self.apphex.text().strip(), self.outhex.text().strip()
         out_bin = self.bin_edit.text().strip() if self.bin_check.isChecked() else None
         if not boot or not app or not out_hex or (self.bin_check.isChecked() and not out_bin):
-            QMessageBox.warning(self, "Missing input", "Select both input HEX files and all enabled output paths.")
+            self.show_message(QMessageBox.Warning, "Missing input", "Select the bootloader and application HEX files. Output paths are generated automatically beside the application HEX.")
             return
         if not Path(boot).is_file() or not Path(app).is_file():
-            QMessageBox.critical(self, "File not found", "Bootloader or application HEX file does not exist.")
+            self.show_message(QMessageBox.Critical, "File not found", "Bootloader or application HEX file does not exist.")
             return
         try:
             version = int(self.fields["version"].text().strip(), 0)
@@ -334,7 +352,7 @@ class App(QMainWindow):
                                    boot_start, app_start, metadata_start, metadata_size)
         except Exception as exc:
             self.log_line("ERROR: " + str(exc))
-            QMessageBox.critical(self, "Package generation failed", str(exc))
+            self.show_message(QMessageBox.Critical, "Package generation failed", str(exc))
             return
         self.log_line("=" * 62)
         self.log_line("PACKAGE GENERATED AND VERIFIED")
@@ -353,7 +371,7 @@ class App(QMainWindow):
             self.log_line(f"BIN output: {result['bin']} ({result['bin_size']:,} bytes; base 0x{result['flash_start']:08X})")
         self.log_line("Verified by re-reading generated output file(s).")
         self.log_line("IMPORTANT: erase target Flash before programming.")
-        QMessageBox.information(self, "Package ready", f"Package generated and verified.\n\nApp span: {result['app_span']:,} bytes\nCRC: 0x{result['crc']:04X}\nVersion: {result['version']}\n" + (f"BIN: {result['bin_size']:,} bytes\nBase: 0x{result['flash_start']:08X}\n\n" if result['bin'] else "\n") + "Erase target Flash before programming.")
+        self.show_message(QMessageBox.Information, "Package ready", f"Package generated and verified.\n\nApp span: {result['app_span']:,} bytes\nCRC: 0x{result['crc']:04X}\nVersion: {result['version']}\n" + (f"BIN: {result['bin_size']:,} bytes\nBase: 0x{result['flash_start']:08X}\n\n" if result['bin'] else "\n") + "Erase target Flash before programming.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
